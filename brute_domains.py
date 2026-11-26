@@ -1,5 +1,6 @@
 import sys
 import dns.resolver
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def wordlist(filename):
     try:
@@ -9,35 +10,39 @@ def wordlist(filename):
         print(f'[-] Wordlist file "{filename}" not found')
         sys.exit(1)
 
+def resolve_subdomain(fqdn, resolver):
+    try:
+        answers = resolver.resolve(fqdn, 'A')
+        return [(fqdn, a.address) for a in answers]
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return None
+    except Exception as e:
+        print(f'[-] Error {fqdn}: {e}')
+        return None
 
-def brute_domains(domain, wordlist_file):
+def worker(sub, domain, wordlist):
+    fqdn = f'{sub}.{domain}'
+    return resolve_subdomain(fqdn, wordlist)
+
+def brute_domains(domain, wordlist_file, threads=20):
     subdomains = wordlist(wordlist_file)
-    print(f'[-] Loaded {len(subdomains)} names for testing')
+    print(f'[-] Loaded {len(subdomains)} names for testing. Threads: {threads}')
     print(f'[-] Target domains: {domain}\n')
 
-    founds = []
+
     resolver = dns.resolver.Resolver()
     resolver.timeout = 1.5
     resolver.lifetime = 3.0
+    founds = []
 
-    for sub in subdomains:
-        qdn = f'{sub}.{domain}'
-        try:
-            answers = resolver.resolve(qdn, 'A')
-            for answer in answers:
-                ip = answer.address
-                print(f'[+] Found {qdn} -> {ip}')
-                founds.append(ip)
-        except dns.resolver.NXDOMAIN:
-            pass
-        except dns.resolver.NoAnswer:
-            pass
-        except dns.resolver.Timeout:
-            print(f'[-] Timeout for {qdn}')
-        except dns.resolver.NoNameservers:
-            print(f'[-] No Nameservers for {qdn}')
-        except Exception:
-            print(f'[-] Unknown error for {qdn}')
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = {executor.submit(worker, sub, domain, resolver): sub for sub in subdomains}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                for fqdn, ip in result:
+                    print(f'[+] {fqdn}  ->  {ip}')
+                    founds.append((fqdn, ip))
 
     print(f'\n[!] Founded {len(founds)} names for testing')
     return founds
